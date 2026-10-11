@@ -1,0 +1,31 @@
+{
+  "name": "MindShift",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "android": "react-native run-android",
+    "start": "react-native start",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@react-native/babel-preset": "^0.75.4",
+    "@react-native/metro-config": "^0.75.4",
+    "@react-native/typescript-config": "^0.75.4",
+    "react": "18.3.1",
+    "react-native": "^0.75.4"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.0",
+    "@babel/preset-env": "^7.25.0",
+    "@babel/runtime": "^7.25.0",
+    "@react-native-community/cli": "^20.2.0",
+    "@react-native-community/cli-platform-android": "^20.2.0",
+    "@react-native-community/cli-server-api": "^20.2.0",
+    "@types/connect": "^3.4.38",
+    "@types/react": "^18.3.0",
+    "eslint": "^8.57.0",
+    "node-releases": "^2.0.58",
+    "typescript": "5.0.4"
+  },
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+}
