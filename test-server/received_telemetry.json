@@ -1,0 +1,39 @@
+[
+  {
+    "receivedAt": "2026-10-25T19:49:02.990Z",
+    "eventCount": 2,
+    "interventionCount": 2,
+    "events": [
+      {
+        "packageName": "com.instagram.android",
+        "eventType": "ACTIVITY_RESUMED",
+        "timestamp": 1728654321000,
+        "duration": 0,
+        "recordedAt": 1728654325000
+      },
+      {
+        "packageName": "com.google.android.youtube",
+        "eventType": "ACTIVITY_RESUMED",
+        "timestamp": 1728654330000,
+        "duration": 0,
+        "recordedAt": 1728654335000
+      }
+    ],
+    "interventionLogs": [
+      {
+        "packageName": "com.instagram.android",
+        "timestamp": 1728654322000,
+        "interventionStage": 2,
+        "mindlessnessScore": 0.68,
+        "userAction": "COMPLIED_CLOSED_APP"
+      },
+      {
+        "packageName": "com.google.android.youtube",
+        "timestamp": 1728654331000,
+        "interventionStage": 3,
+        "mindlessnessScore": 0.85,
+        "userAction": "OVERRIDDEN"
+      }
+    ]
+  }
+]

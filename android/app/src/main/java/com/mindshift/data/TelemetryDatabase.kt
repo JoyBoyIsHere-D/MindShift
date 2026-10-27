@@ -6,17 +6,23 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 /**
- * Room database for storing telemetry events locally.
+ * Room database for storing telemetry events, user goals, and intervention logs locally.
  * Uses a singleton pattern for thread safety.
  */
 @Database(
-    entities = [TelemetryEvent::class],
-    version = 1,
+    entities = [
+        TelemetryEvent::class,
+        UserGoalEntity::class,
+        InterventionLogEntity::class
+    ],
+    version = 2,
     exportSchema = false
 )
 abstract class TelemetryDatabase : RoomDatabase() {
 
     abstract fun telemetryEventDao(): TelemetryEventDao
+    abstract fun userGoalDao(): UserGoalDao
+    abstract fun interventionLogDao(): InterventionLogDao
 
     companion object {
         @Volatile

@@ -2,24 +2,21 @@ package com.mindshift.modules
 
 import android.app.AppOpsManager
 import android.app.usage.UsageEvents
+import android.app.usage.UsageStats
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Process
 import android.provider.Settings
 import com.facebook.react.bridge.*
 import java.util.Calendar
+import kotlin.math.max
 
 /**
  * Native module that interfaces with Android's UsageStatsManager
  * to collect app usage telemetry data.
- *
- * Exposes three key methods to the JS bridge:
- * 1. checkUsagePermission() - checks if USAGE_STATS permission is granted
- * 2. requestUsagePermission() - opens system settings for user to grant permission
- * 3. getAggregatedStats(startTime, endTime) - returns total foreground time per app
- * 4. getRawEvents(startTime, endTime) - returns chronological RESUMED/PAUSED events
  */
 class UsageStatsModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
@@ -46,7 +43,6 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
 
     /**
      * Check if the app has been granted Usage Stats permission.
-     * This is a special permission that must be manually toggled by the user.
      */
     @ReactMethod
     fun checkUsagePermission(promise: Promise) {
@@ -66,7 +62,6 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
 
     /**
      * Open the system Usage Access settings screen.
-     * The user must manually toggle permission for our app.
      */
     @ReactMethod
     fun requestUsagePermission(promise: Promise) {
@@ -82,11 +77,32 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
     }
 
     /**
+     * Returns the subset of TARGET_PACKAGES that are ACTUALLY INSTALLED on this device.
+     */
+    @ReactMethod
+    fun getInstalledTargetPackages(promise: Promise) {
+        try {
+            val pm = reactApplicationContext.packageManager
+            val installedArray = Arguments.createArray()
+
+            for (pkg in TARGET_PACKAGES) {
+                try {
+                    pm.getPackageInfo(pkg, 0)
+                    installedArray.pushString(pkg)
+                } catch (e: PackageManager.NameNotFoundException) {
+                    // Not installed on this physical device/emulator
+                }
+            }
+
+            promise.resolve(installedArray)
+        } catch (e: Exception) {
+            promise.reject("INSTALLED_PACKAGES_ERROR", e.message, e)
+        }
+    }
+
+    /**
      * Query aggregated usage statistics for a given time window.
-     * Returns total foreground milliseconds per tracked app package.
-     *
-     * @param startTime epoch millis for window start
-     * @param endTime epoch millis for window end
+     * Combines queryAndAggregateUsageStats with queryUsageStats for 100% Android 14+ reliability.
      */
     @ReactMethod
     fun getAggregatedStats(startTime: Double, endTime: Double, promise: Promise) {
@@ -94,13 +110,34 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
             val usageStatsManager = reactApplicationContext
                 .getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
 
-            val statsMap = usageStatsManager.queryAndAggregateUsageStats(
-                startTime.toLong(), endTime.toLong()
+            val startMillis = startTime.toLong()
+            val endMillis = endTime.toLong()
+
+            // 1. Initial aggregation map
+            val statsMap = usageStatsManager.queryAndAggregateUsageStats(startMillis, endMillis)
+            val aggregated = mutableMapOf<String, UsageStats>()
+            aggregated.putAll(statsMap)
+
+            // 2. Fallback merge with daily bucket query for Android 14+ where rolling bucket may not be finalized
+            val dailyStats = usageStatsManager.queryUsageStats(
+                UsageStatsManager.INTERVAL_DAILY,
+                startMillis,
+                endMillis
             )
+            if (dailyStats != null) {
+                for (stat in dailyStats) {
+                    if (stat.packageName in TARGET_PACKAGES) {
+                        val existing = aggregated[stat.packageName]
+                        if (existing == null || stat.totalTimeInForeground > existing.totalTimeInForeground) {
+                            aggregated[stat.packageName] = stat
+                        }
+                    }
+                }
+            }
 
             val result = Arguments.createArray()
 
-            for ((packageName, stats) in statsMap) {
+            for ((packageName, stats) in aggregated) {
                 if (packageName in TARGET_PACKAGES && stats.totalTimeInForeground > 0) {
                     val entry = Arguments.createMap().apply {
                         putString("packageName", packageName)
@@ -121,11 +158,6 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
 
     /**
      * Query raw usage events for a given time window.
-     * Returns chronological ACTIVITY_RESUMED and ACTIVITY_PAUSED events
-     * to track session velocity and launch frequencies.
-     *
-     * @param startTime epoch millis for window start
-     * @param endTime epoch millis for window end
      */
     @ReactMethod
     fun getRawEvents(startTime: Double, endTime: Double, promise: Promise) {
@@ -143,7 +175,6 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
             while (usageEvents.hasNextEvent()) {
                 usageEvents.getNextEvent(event)
 
-                // Only capture RESUMED (1) and PAUSED (2) for target packages
                 if (event.packageName in TARGET_PACKAGES &&
                     (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED ||
                      event.eventType == UsageEvents.Event.ACTIVITY_PAUSED)

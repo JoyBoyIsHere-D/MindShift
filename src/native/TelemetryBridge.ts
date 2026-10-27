@@ -28,6 +28,52 @@ export interface AppMetadata {
   color: string;
 }
 
+export interface UserGoal {
+  packageName: string;
+  baselineDailyMinutes: number; // L_0 in minutes
+  decayRateLambda: number;      // lambda decay rate
+  startDateEpochMs: number;
+  enabled: boolean;
+}
+
+export interface ContextMetrics {
+  packageName: string;
+  mindlessnessScore: number;     // 0.0 to 1.0
+  launchCount30m: number;
+  sessionVelocityDwellMs: number;
+  isRapidLoop: boolean;
+  isDeepWorkHour: boolean;
+  isLateNightHour: boolean;
+  allowedLimitMinutes: number;   // L_t
+  usedTodayMinutes: number;
+  usageRatio: number;            // used / allowed
+  triggerReason: string;
+}
+
+export interface MarkovTransition {
+  fromPackage: string;
+  toPackage: string;
+  probability: number;
+  count: number;
+}
+
+export interface InterventionLog {
+  id: number;
+  packageName: string;
+  timestamp: number;
+  interventionStage: number; // 1 to 4
+  mindlessnessScore: number;
+  userAction: string;        // "COMPLIED_CLOSED_APP" | "OVERRIDDEN" | "DISMISSED"
+  synced: boolean;
+}
+
+export interface OverlayConfig {
+  stage1Enabled: boolean;
+  stage2Enabled: boolean;
+  stage3Enabled: boolean;
+  stage4Enabled: boolean;
+}
+
 export const KNOWN_PACKAGES: Record<string, AppMetadata> = {
   'com.instagram.android': { displayName: 'Instagram', color: '#E1306C' },
   'com.google.android.youtube': { displayName: 'YouTube', color: '#FF0000' },
@@ -72,114 +118,168 @@ const assertAndroid = () => {
 };
 
 export const TelemetryBridge = {
-  /**
-   * Checks if USAGE_STATS permission is granted via AppOpsManager
-   */
+  // =========================================================================
+  // Usage Stats Module
+  // =========================================================================
   async checkUsagePermission(): Promise<boolean> {
     assertAndroid();
-    if (!UsageStatsModule) {
-      console.warn('UsageStatsModule is not linked.');
-      return false;
-    }
+    if (!UsageStatsModule) return false;
     return UsageStatsModule.checkUsagePermission();
   },
 
-  /**
-   * Opens the system Settings.ACTION_USAGE_ACCESS_SETTINGS screen
-   */
+  async getInstalledTargetPackages(): Promise<string[]> {
+    assertAndroid();
+    if (!UsageStatsModule) return [];
+    return UsageStatsModule.getInstalledTargetPackages();
+  },
+
   async requestUsagePermission(): Promise<boolean> {
     assertAndroid();
-    if (!UsageStatsModule) {
-      console.warn('UsageStatsModule is not linked.');
-      return false;
-    }
+    if (!UsageStatsModule) return false;
     return UsageStatsModule.requestUsagePermission();
   },
 
-  /**
-   * Returns aggregated usage statistics for today (midnight to now)
-   */
   async getTodayStats(): Promise<UsageStat[]> {
     assertAndroid();
     if (!UsageStatsModule) return [];
     return UsageStatsModule.getTodayStats();
   },
 
-  /**
-   * Returns aggregated usage statistics for custom window
-   */
   async getAggregatedStats(startTime: number, endTime: number): Promise<UsageStat[]> {
     assertAndroid();
     if (!UsageStatsModule) return [];
     return UsageStatsModule.getAggregatedStats(startTime, endTime);
   },
 
-  /**
-   * Returns chronological ACTIVITY_RESUMED & ACTIVITY_PAUSED events
-   */
   async getRawEvents(startTime: number, endTime: number): Promise<RawUsageEvent[]> {
     assertAndroid();
     if (!UsageStatsModule) return [];
     return UsageStatsModule.getRawEvents(startTime, endTime);
   },
 
-  /**
-   * Starts the persistent foreground service (Android 14+ specialUse)
-   */
+  // =========================================================================
+  // Service Bridge Module & System Overlay
+  // =========================================================================
   async startService(): Promise<boolean> {
     assertAndroid();
     if (!ServiceBridgeModule) return false;
     return ServiceBridgeModule.startService();
   },
 
-  /**
-   * Stops the foreground service
-   */
   async stopService(): Promise<boolean> {
     assertAndroid();
     if (!ServiceBridgeModule) return false;
     return ServiceBridgeModule.stopService();
   },
 
-  /**
-   * Checks if foreground service is actively running
-   */
   async isServiceRunning(): Promise<boolean> {
     assertAndroid();
     if (!ServiceBridgeModule) return false;
     return ServiceBridgeModule.isServiceRunning();
   },
 
-  /**
-   * Syncs unsynced local events to cloud REST endpoint
-   */
+  async hasOverlayPermission(): Promise<boolean> {
+    assertAndroid();
+    if (!ServiceBridgeModule) return false;
+    return ServiceBridgeModule.hasOverlayPermission();
+  },
+
+  async requestOverlayPermission(): Promise<boolean> {
+    assertAndroid();
+    if (!ServiceBridgeModule) return false;
+    return ServiceBridgeModule.requestOverlayPermission();
+  },
+
+  // =========================================================================
+  // User Goals & Context Engine
+  // =========================================================================
+  async getUserGoals(): Promise<UserGoal[]> {
+    assertAndroid();
+    if (!ServiceBridgeModule) return [];
+    return ServiceBridgeModule.getUserGoals();
+  },
+
+  async saveUserGoal(
+    packageName: string,
+    baselineMinutes: number,
+    decayRateLambda: number,
+    enabled: boolean = true
+  ): Promise<boolean> {
+    assertAndroid();
+    if (!ServiceBridgeModule) return false;
+    return ServiceBridgeModule.saveUserGoal(
+      packageName,
+      baselineMinutes,
+      decayRateLambda,
+      enabled
+    );
+  },
+
+  async getContextMetrics(packageName: string): Promise<ContextMetrics> {
+    assertAndroid();
+    if (!ServiceBridgeModule) throw new Error('ServiceBridgeModule not linked');
+    return ServiceBridgeModule.getContextMetrics(packageName);
+  },
+
+  async getTopTransitions(limit: number = 3): Promise<MarkovTransition[]> {
+    assertAndroid();
+    if (!ServiceBridgeModule) return [];
+    return ServiceBridgeModule.getTopTransitions(limit);
+  },
+
+  async testTriggerOverlay(stage: number, packageName: string): Promise<boolean> {
+    assertAndroid();
+    if (!ServiceBridgeModule) return false;
+    return ServiceBridgeModule.testTriggerOverlay(stage, packageName);
+  },
+
+  async dismissOverlay(): Promise<boolean> {
+    assertAndroid();
+    if (!ServiceBridgeModule) return false;
+    return ServiceBridgeModule.dismissOverlay();
+  },
+
+  async getOverlayConfig(): Promise<OverlayConfig> {
+    assertAndroid();
+    if (!ServiceBridgeModule) {
+      return { stage1Enabled: true, stage2Enabled: true, stage3Enabled: true, stage4Enabled: true };
+    }
+    return ServiceBridgeModule.getOverlayConfig();
+  },
+
+  async setOverlayStageEnabled(stage: number, enabled: boolean): Promise<boolean> {
+    assertAndroid();
+    if (!ServiceBridgeModule) return false;
+    return ServiceBridgeModule.setOverlayStageEnabled(stage, enabled);
+  },
+
+  async getRecentInterventionLogs(limit: number = 20): Promise<InterventionLog[]> {
+    assertAndroid();
+    if (!ServiceBridgeModule) return [];
+    return ServiceBridgeModule.getRecentInterventionLogs(limit);
+  },
+
+  // =========================================================================
+  // Cloud Sync Module
+  // =========================================================================
   async syncToCloud(): Promise<SyncResult> {
     assertAndroid();
     if (!SyncModule) throw new Error('SyncModule not linked');
     return SyncModule.syncToCloud();
   },
 
-  /**
-   * Configures custom REST sync endpoint URL
-   */
   async setSyncEndpoint(endpoint: string): Promise<boolean> {
     assertAndroid();
     if (!SyncModule) return false;
     return SyncModule.setSyncEndpoint(endpoint);
   },
 
-  /**
-   * Returns count of unsynced rows in Room DB
-   */
   async getUnsyncedCount(): Promise<number> {
     assertAndroid();
     if (!SyncModule) return 0;
     return SyncModule.getUnsyncedCount();
   },
 
-  /**
-   * Returns total event count in Room DB
-   */
   async getTotalEventCount(): Promise<number> {
     assertAndroid();
     if (!SyncModule) return 0;

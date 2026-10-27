@@ -9,6 +9,7 @@ import {
   AppState,
   AppStateStatus,
   Alert,
+  Platform,
 } from 'react-native';
 import {
   TelemetryBridge,
@@ -17,13 +18,15 @@ import {
 } from './native/TelemetryBridge';
 import { OnboardingView } from './components/OnboardingView';
 import { DashboardView } from './components/DashboardView';
+import { GoalsAndContextView } from './components/GoalsAndContextView';
 import { SyncControlsView } from './components/SyncControlsView';
 
-type TabType = 'onboarding' | 'dashboard' | 'sync';
+type TabType = 'onboarding' | 'dashboard' | 'goals' | 'sync';
 
 export default function App(): React.JSX.Element {
   const [currentTab, setCurrentTab] = useState<TabType>('dashboard');
   const [hasUsagePermission, setHasUsagePermission] = useState<boolean>(false);
+  const [hasOverlayPermission, setHasOverlayPermission] = useState<boolean>(false);
   const [isServiceRunning, setIsServiceRunning] = useState<boolean>(false);
   const [todayStats, setTodayStats] = useState<UsageStat[]>([]);
   const [rawEvents, setRawEvents] = useState<RawUsageEvent[]>([]);
@@ -36,16 +39,27 @@ export default function App(): React.JSX.Element {
   // 1. Permission & Service Status Verification
   const verifyState = useCallback(async () => {
     try {
-      const granted = await TelemetryBridge.checkUsagePermission();
-      setHasUsagePermission(granted);
+      const usageGranted = await TelemetryBridge.checkUsagePermission();
+      setHasUsagePermission(usageGranted);
+
+      const overlayGranted = await TelemetryBridge.hasOverlayPermission();
+      setHasOverlayPermission(overlayGranted);
 
       const running = await TelemetryBridge.isServiceRunning();
       setIsServiceRunning(running);
 
-      if (granted) {
+      if (usageGranted && overlayGranted && !running) {
+        try {
+          await TelemetryBridge.startService();
+          setIsServiceRunning(true);
+        } catch (e: any) {
+          console.warn('Auto-start service failed:', e?.message);
+        }
+      }
+
+      if (usageGranted) {
         loadTodayStats();
       } else {
-        // If permission is not granted, guide the user to Onboarding tab
         setCurrentTab('onboarding');
       }
 
@@ -60,7 +74,6 @@ export default function App(): React.JSX.Element {
     setIsLoadingStats(true);
     try {
       const stats = await TelemetryBridge.getTodayStats();
-      // Sort in descending order of foreground duration
       const sorted = [...stats].sort(
         (a, b) => b.totalTimeInForeground - a.totalTimeInForeground
       );
@@ -75,11 +88,9 @@ export default function App(): React.JSX.Element {
   // 3. Fetch Raw Activity Resumed/Paused Events
   const loadRawEvents = async () => {
     try {
-      // Last 24 hours
       const endTime = Date.now();
       const startTime = endTime - 24 * 60 * 60 * 1000;
       const events = await TelemetryBridge.getRawEvents(startTime, endTime);
-      // Newest events first
       setRawEvents([...events].reverse());
     } catch (e: any) {
       Alert.alert('Raw Events Error', e?.message || 'Failed to fetch raw events');
@@ -102,7 +113,6 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     verifyState();
 
-    // Re-check when app regains focus (e.g. after returning from Android Settings)
     const subscription = AppState.addEventListener(
       'change',
       (nextAppState: AppStateStatus) => {
@@ -126,40 +136,42 @@ export default function App(): React.JSX.Element {
     }
   };
 
+  // Request Overlay Permission via Settings
+  const handleRequestOverlayPermission = async () => {
+    try {
+      await TelemetryBridge.requestOverlayPermission();
+    } catch (e: any) {
+      Alert.alert('Overlay Permission Error', e?.message || 'Could not open overlay settings');
+    }
+  };
+
   // Toggle Background Foreground Service
   const handleToggleService = async () => {
     try {
       if (isServiceRunning) {
         await TelemetryBridge.stopService();
         setIsServiceRunning(false);
-        Alert.alert('Service Stopped', 'Background telemetry service is now inactive.');
+        Alert.alert('Service Stopped', 'MindShift telemetry & context service stopped.');
       } else {
         await TelemetryBridge.startService();
         setIsServiceRunning(true);
-        Alert.alert(
-          'Service Started',
-          'Persistent telemetry is running with notification: "Telemetry active for BTP".'
-        );
+        Alert.alert('Service Started', 'MindShift real-time context service is active.');
       }
     } catch (e: any) {
-      Alert.alert('Service Error', e?.message || 'Failed to toggle service');
+      Alert.alert('Service Error', e?.message || 'Failed to toggle service state');
     }
   };
 
-  // Trigger Manual Cloud Sync
+  // Trigger Cloud Sync
   const handleTriggerSync = async () => {
     setIsSyncing(true);
     setLastSyncResult(null);
     try {
       const result = await TelemetryBridge.syncToCloud();
-      setLastSyncResult(
-        `✓ Sync completed: ${result.syncedCount} events successfully uploaded to cloud.`
-      );
-      await loadDatabaseCounts();
+      setLastSyncResult(`Synced ${result.syncedCount} events successfully.`);
+      loadDatabaseCounts();
     } catch (e: any) {
-      const errorMsg = e?.message || 'Cloud sync failed. Check network or server URL.';
-      setLastSyncResult(`✗ Sync failed: ${errorMsg}`);
-      Alert.alert('Sync Error', errorMsg);
+      setLastSyncResult(`Sync failed: ${e?.message || 'Network error'}`);
     } finally {
       setIsSyncing(false);
     }
@@ -169,14 +181,19 @@ export default function App(): React.JSX.Element {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" backgroundColor="#0F172A" />
 
-      {/* Top App Header */}
+      {/* Top Header */}
       <View style={styles.header}>
         <View>
           <Text style={styles.appTitle}>MindShift</Text>
-          <Text style={styles.appSubtitle}>BTP Telemetry Engine</Text>
+          <Text style={styles.appSubtitle}>BTP Phase 2 • Adaptive Overlays & Context Engine</Text>
         </View>
 
-        <View style={styles.serviceStatusContainer}>
+        {/* Live Service Indicator */}
+        <TouchableOpacity
+          style={styles.serviceStatusContainer}
+          onPress={handleToggleService}
+          activeOpacity={0.7}
+        >
           <View
             style={[
               styles.statusIndicator,
@@ -184,18 +201,20 @@ export default function App(): React.JSX.Element {
             ]}
           />
           <Text style={styles.statusIndicatorText}>
-            {isServiceRunning ? 'SERVICE ACTIVE' : 'SERVICE OFF'}
+            {isServiceRunning ? 'SERVICE ON' : 'SERVICE OFF'}
           </Text>
-        </View>
+        </TouchableOpacity>
       </View>
 
-      {/* Main View Area */}
+      {/* Main Tab Screen Content */}
       <View style={styles.body}>
         {currentTab === 'onboarding' && (
           <OnboardingView
             hasUsagePermission={hasUsagePermission}
+            hasOverlayPermission={hasOverlayPermission}
             isServiceRunning={isServiceRunning}
             onRequestPermission={handleRequestPermission}
+            onRequestOverlayPermission={handleRequestOverlayPermission}
             onToggleService={handleToggleService}
             onProceedToDashboard={() => setCurrentTab('dashboard')}
           />
@@ -209,6 +228,10 @@ export default function App(): React.JSX.Element {
             onRefresh={loadTodayStats}
             onFetchRawEvents={loadRawEvents}
           />
+        )}
+
+        {currentTab === 'goals' && (
+          <GoalsAndContextView />
         )}
 
         {currentTab === 'sync' && (
@@ -230,7 +253,7 @@ export default function App(): React.JSX.Element {
           onPress={() => setCurrentTab('onboarding')}
         >
           <Text style={[styles.tabText, currentTab === 'onboarding' && styles.tabTextActive]}>
-            Setup & Perms
+            Perms
           </Text>
         </TouchableOpacity>
 
@@ -242,7 +265,16 @@ export default function App(): React.JSX.Element {
           }}
         >
           <Text style={[styles.tabText, currentTab === 'dashboard' && styles.tabTextActive]}>
-            Dashboard
+            Usage
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.tabButton, currentTab === 'goals' && styles.tabButtonActive]}
+          onPress={() => setCurrentTab('goals')}
+        >
+          <Text style={[styles.tabText, currentTab === 'goals' && styles.tabTextActive]}>
+            Context & Overlays
           </Text>
         </TouchableOpacity>
 
@@ -254,7 +286,7 @@ export default function App(): React.JSX.Element {
           }}
         >
           <Text style={[styles.tabText, currentTab === 'sync' && styles.tabTextActive]}>
-            Cloud Sync {unsyncedCount > 0 ? `(${unsyncedCount})` : ''}
+            Sync {unsyncedCount > 0 ? `(${unsyncedCount})` : ''}
           </Text>
         </TouchableOpacity>
       </View>
@@ -266,6 +298,7 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: '#0F172A',
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 28) + 8 : 0,
   },
   header: {
     flexDirection: 'row',
@@ -283,8 +316,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   appSubtitle: {
-    fontSize: 11,
+    fontSize: 10,
     color: '#94A3B8',
+    marginTop: 2,
   },
   serviceStatusContainer: {
     flexDirection: 'row',
@@ -317,7 +351,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#1E293B',
     paddingVertical: 8,
-    paddingHorizontal: 12,
+    paddingHorizontal: 8,
   },
   tabButton: {
     flex: 1,
@@ -330,7 +364,7 @@ const styles = StyleSheet.create({
   },
   tabText: {
     color: '#64748B',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
   },
   tabTextActive: {
@@ -338,4 +372,3 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
-

@@ -3,6 +3,7 @@ package com.mindshift.modules
 import com.facebook.react.bridge.*
 import com.mindshift.data.TelemetryDatabase
 import com.mindshift.data.TelemetryEvent
+import com.mindshift.data.InterventionLogEntity
 import com.google.gson.Gson
 import kotlinx.coroutines.*
 import java.io.OutputStreamWriter
@@ -10,7 +11,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Module for syncing local telemetry data to the cloud backend.
+ * Module for syncing local telemetry data and intervention compliance logs to the cloud backend.
  * Batches unsynced rows and pushes them via REST API.
  */
 class SyncModule(reactContext: ReactApplicationContext) :
@@ -38,29 +39,44 @@ class SyncModule(reactContext: ReactApplicationContext) :
     }
 
     /**
-     * Sync all unsynced telemetry events to the cloud backend.
-     * Batches events, sends them as JSON, and marks them as synced.
+     * Sync all unsynced telemetry events and intervention logs to the cloud backend.
      */
     @ReactMethod
     fun syncToCloud(promise: Promise) {
         scope.launch {
             try {
                 val db = TelemetryDatabase.getInstance(reactApplicationContext)
-                val dao = db.telemetryEventDao()
+                val eventDao = db.telemetryEventDao()
+                val logDao = db.interventionLogDao()
 
                 var totalSynced = 0
-                var unsyncedEvents = dao.getUnsyncedEvents(BATCH_SIZE)
 
+                // 1. Sync telemetry events
+                var unsyncedEvents = eventDao.getUnsyncedEvents(BATCH_SIZE)
                 while (unsyncedEvents.isNotEmpty()) {
-                    val success = pushBatchToServer(unsyncedEvents)
-
+                    val success = pushBatchToServer(events = unsyncedEvents, logs = emptyList())
                     if (success) {
                         val ids = unsyncedEvents.map { it.id }
-                        dao.markAsSynced(ids)
+                        eventDao.markAsSynced(ids)
                         totalSynced += unsyncedEvents.size
-                        unsyncedEvents = dao.getUnsyncedEvents(BATCH_SIZE)
+                        unsyncedEvents = eventDao.getUnsyncedEvents(BATCH_SIZE)
                     } else {
-                        promise.reject("SYNC_ERROR", "Failed to push batch to server")
+                        promise.reject("SYNC_ERROR", "Failed to push telemetry events batch to server")
+                        return@launch
+                    }
+                }
+
+                // 2. Sync intervention compliance logs
+                var unsyncedLogs = logDao.getUnsyncedLogs(BATCH_SIZE)
+                while (unsyncedLogs.isNotEmpty()) {
+                    val success = pushBatchToServer(events = emptyList(), logs = unsyncedLogs)
+                    if (success) {
+                        val ids = unsyncedLogs.map { it.id }
+                        logDao.markAsSynced(ids)
+                        totalSynced += unsyncedLogs.size
+                        unsyncedLogs = logDao.getUnsyncedLogs(BATCH_SIZE)
+                    } else {
+                        promise.reject("SYNC_ERROR", "Failed to push intervention logs batch to server")
                         return@launch
                     }
                 }
@@ -77,15 +93,16 @@ class SyncModule(reactContext: ReactApplicationContext) :
     }
 
     /**
-     * Get the count of unsynced events.
+     * Get the combined count of unsynced events + intervention logs.
      */
     @ReactMethod
     fun getUnsyncedCount(promise: Promise) {
         scope.launch {
             try {
                 val db = TelemetryDatabase.getInstance(reactApplicationContext)
-                val count = db.telemetryEventDao().getUnsyncedCount()
-                promise.resolve(count)
+                val eventCount = db.telemetryEventDao().getUnsyncedCount()
+                val logCount = db.interventionLogDao().getUnsyncedCount()
+                promise.resolve(eventCount + logCount)
             } catch (e: Exception) {
                 promise.reject("COUNT_ERROR", e.message, e)
             }
@@ -93,22 +110,26 @@ class SyncModule(reactContext: ReactApplicationContext) :
     }
 
     /**
-     * Get total number of events stored locally.
+     * Get total number of events and intervention logs stored locally.
      */
     @ReactMethod
     fun getTotalEventCount(promise: Promise) {
         scope.launch {
             try {
                 val db = TelemetryDatabase.getInstance(reactApplicationContext)
-                val count = db.telemetryEventDao().getTotalCount()
-                promise.resolve(count)
+                val eventCount = db.telemetryEventDao().getTotalCount()
+                val logCount = db.interventionLogDao().getTotalCount()
+                promise.resolve(eventCount + logCount)
             } catch (e: Exception) {
                 promise.reject("COUNT_ERROR", e.message, e)
             }
         }
     }
 
-    private fun pushBatchToServer(events: List<TelemetryEvent>): Boolean {
+    private fun pushBatchToServer(
+        events: List<TelemetryEvent>,
+        logs: List<InterventionLogEntity>
+    ): Boolean {
         return try {
             val url = URL(syncEndpoint)
             val connection = url.openConnection() as HttpURLConnection
@@ -120,8 +141,10 @@ class SyncModule(reactContext: ReactApplicationContext) :
                 readTimeout = 15000
             }
 
-            val jsonPayload = gson.toJson(mapOf(
-                "events" to events.map { event ->
+            val payloadMap = mutableMapOf<String, Any>()
+
+            if (events.isNotEmpty()) {
+                payloadMap["events"] = events.map { event ->
                     mapOf(
                         "packageName" to event.packageName,
                         "eventType" to event.eventType,
@@ -130,7 +153,21 @@ class SyncModule(reactContext: ReactApplicationContext) :
                         "recordedAt" to event.recordedAt
                     )
                 }
-            ))
+            }
+
+            if (logs.isNotEmpty()) {
+                payloadMap["interventionLogs"] = logs.map { log ->
+                    mapOf(
+                        "packageName" to log.packageName,
+                        "timestamp" to log.timestamp,
+                        "interventionStage" to log.interventionStage,
+                        "mindlessnessScore" to log.mindlessnessScore,
+                        "userAction" to log.userAction
+                    )
+                }
+            }
+
+            val jsonPayload = gson.toJson(payloadMap)
 
             val writer = OutputStreamWriter(connection.outputStream)
             writer.write(jsonPayload)
